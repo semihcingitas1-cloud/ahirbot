@@ -6,6 +6,8 @@ const connectDB = require('./lib/db');
 const auth = require('./routes/auth');
 const farm = require('./routes/farm');
 const device = require('./routes/device');
+const homePage = require('./utils/homePage');
+const { version } = require('./package.json');
 
 if (!process.env.JWT_SECRET) console.error('UYARI: JWT_SECRET tanımlı değil, giriş çalışmaz.');
 
@@ -16,7 +18,11 @@ app.use(cors()); // mobil uygulama ve robot farklı yerlerden bağlanır; kimlik
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: false }));
 
-app.get('/', (req, res) => res.send('AhırBot API çalışıyor'));
+app.get('/', async (req, res) => {
+  let dbOk = false;
+  try { await connectDB(); dbOk = true; } catch { /* sayfada "Bağlantı yok" görünür */ }
+  res.send(homePage({ dbOk, version }));
+});
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 // Her istekten önce (önbellekli) veritabanı bağlantısı
