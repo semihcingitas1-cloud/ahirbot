@@ -4,7 +4,9 @@ const Robot = require('../models/Robot');
 const Task = require('../models/Task');
 const Notification = require('../models/Notification');
 const CleaningRun = require('../models/CleaningRun');
+const User = require('../models/User');
 const { requireDevice } = require('../middleware/auth');
+const { nowLocal, programSlots } = require('../lib/schedule');
 
 // ─────────────────────────────────────────────────────────────
 // Robotun (ESP32 / Raspberry Pi vb.) kullandığı API.
@@ -18,7 +20,6 @@ router.use('/device', requireDevice);
 
 const TELEMETRY_FIELDS = ['status', 'progress', 'corridor', 'corridorTotal', 'battery', 'tank', 'tankCapacityL', 'water', 'waterCapacityL', 'cleanedArea', 'ammonia', 'speed', 'routeLengthM', 'etaMin', 'cameraUrl'];
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, Number(v)));
-const today = () => new Date().toISOString().slice(0, 10);
 
 const notify = (robot, type, title, body) => Notification.create({ owner: robot.owner, robot: robot._id, type, title, body });
 
@@ -54,13 +55,27 @@ router.post('/device/telemetry', async (req, res) => {
   }
   await Promise.all(jobs);
 
-  const tasks = await Task.find({ robot: robot._id, date: today(), status: { $in: ['pending', 'running'] } }).sort('time');
+  const { date, time } = nowLocal();
+  const tasks = (await Task.find({ robot: robot._id, date, status: { $in: ['pending', 'running'] } }).sort('time'))
+    .map((t) => ({ id: String(t._id), time: t.time, title: t.title, mode: t.mode, status: t.status }));
+
+  // Otomatik program: kaçırılan turlardan sadece en sonuncusu + gelecek turlar
+  const owner = await User.findById(robot.owner);
+  const p = owner?.autoProgram;
+  if (p?.enabled && (!p.barnId || String(p.barnId) === String(robot.barn))) {
+    const pending = programSlots(p).filter((t) => `${date} ${t}` > (robot.lastAutoSlot || ''));
+    const due = pending.filter((t) => t <= time);
+    const next = [...(due.length ? [due[due.length - 1]] : []), ...pending.filter((t) => t > time)];
+    tasks.push(...next.map((t) => ({ id: `auto-${t}`, time: t, title: 'Otomatik tur', mode: robot.settings.mode, status: 'pending' })));
+    tasks.sort((a, b) => a.time.localeCompare(b.time));
+  }
 
   res.json({
     commands,
     settings: robot.settings,
-    tasks: tasks.map((t) => ({ id: String(t._id), time: t.time, title: t.title, mode: t.mode, status: t.status })),
+    tasks,
     serverTime: new Date().toISOString(),
+    localTime: time,
   });
 });
 
@@ -72,6 +87,10 @@ router.post('/device/run', async (req, res) => {
   const run = await CleaningRun.create({ owner: robot.owner, robot: robot._id, barn: robot.barn, area: ['walkway', 'milking', 'calf', 'other'].includes(area) ? area : 'other', wasteKg: Number(wasteKg) || 0, areaM2: Number(areaM2) || 0, durationMin: Number(durationMin) || 0, ammonia, hygiene });
 
   if (taskId && /^[a-f0-9]{24}$/i.test(taskId)) await Task.updateOne({ _id: taskId, robot: robot._id }, { status: 'done', progress: 100 });
+  if (typeof taskId === 'string' && /^auto-\d{2}:\d{2}$/.test(taskId)) {
+    robot.lastAutoSlot = `${nowLocal().date} ${taskId.slice(5)}`;
+    await robot.save();
+  }
 
   const ton = run.wasteKg >= 1000 ? `${(run.wasteKg / 1000).toFixed(1).replace('.', ',')} ton` : `${Math.round(run.wasteKg)} kg`;
   await notify(robot, 'done', 'Tur tamamlandı', `${robot.name} · ${Math.round(run.areaM2)} m² · ${ton} atık`);
