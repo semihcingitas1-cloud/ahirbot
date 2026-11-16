@@ -1,10 +1,9 @@
 const mongoose = require('mongoose');
 
 const STATUSES = ['cleaning', 'idle', 'charging', 'emptying', 'paused', 'blocked', 'error', 'offline'];
-const COMMANDS = ['start', 'pause', 'stop', 'dock', 'empty', 'drive'];
+const COMMANDS = ['start', 'pause', 'stop', 'dock', 'empty', 'drive', 'ota'];
 
 const robotSchema = new mongoose.Schema({
-
   owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   barn: { type: mongoose.Schema.Types.ObjectId, ref: 'Barn' },
   name: { type: String, required: true, trim: true },           // "ATR-01"
@@ -29,6 +28,7 @@ const robotSchema = new mongoose.Schema({
   position: { x: { type: Number, default: 0 }, y: { type: Number, default: 0 } },
   cameraUrl: { type: String },                 // canlı yayın adresi (varsa)
   lastSeenAt: { type: Date },
+  firmwareVersion: { type: String },
   lastAutoSlot: { type: String },               // en son yapılan otomatik tur: "YYYY-MM-DD HH:MM"
 
   settings: {
@@ -69,6 +69,7 @@ robotSchema.methods.toApp = function () {
     position: { x: this.position?.x ?? 0, y: this.position?.y ?? 0 },
     cameraUrl: this.cameraUrl || null,
     lastSeenAt: this.lastSeenAt,
+    firmwareVersion: this.firmwareVersion || null,
     settings: this.settings,
   };
 };

@@ -6,9 +6,12 @@
   "type": "commonjs",
   "scripts": {
     "dev": "node server.js",
-    "start": "node server.js"
+    "start": "node server.js",
+    "ws": "node ws-gateway.js"
   },
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.5",
@@ -16,6 +19,7 @@
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.3.1",
-    "nodemailer": "^8.0.5"
+    "nodemailer": "^8.0.5",
+    "ws": "^8.23.0"
   }
 }

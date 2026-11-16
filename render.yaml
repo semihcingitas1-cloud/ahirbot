@@ -1,0 +1,14 @@
+# Render "Blueprint": sadece WebSocket geçidi (API Vercel'de kalır)
+services:
+  - type: web
+    name: ahirbot-ws
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node ws-gateway.js
+    healthCheckPath: /health
+    envVars:
+      - key: MONGO_URI
+        sync: false
+      - key: TZ_FARM
+        value: Europe/Istanbul

@@ -30,9 +30,35 @@ Yerelde: `cp .env.example .env`, değerleri doldurun, `npm install && npm run de
 | `GET /reports?range=week\|month\|year` | Raporlar |
 | `GET /notifications`, `POST /notifications/read-all` | Bildirimler |
 
-## Robot (cihaz) API'si
+## Robot WebSocket geçidi (ESP32 buraya bağlanır)
 
-Vercel sürekli açık bağlantı tutamadığı için (MQTT broker / socket.io çalışmaz) robot HTTP ile konuşur.
+Vercel WebSocket tutamaz; bu yüzden `ws-gateway.js` ayrı bir serviste sürekli çalışır (Render ücretsiz plan, `render.yaml` hazır).
+Uygulama yine Vercel API'yi kullanır. İkisi aynı MongoDB'ye bağlanır: uygulamanın komutu `pendingCommands`'a yazılır,
+geçit saniyede bir bakıp bağlı robota anında iletir.
+
+Kurulum (Render): New → Blueprint → bu repo → `MONGO_URI` gir. Adres: `wss://<servis>.onrender.com/ws`
+Yerelde: `MONGO_URI=... npm run ws` → `ws://<bilgisayar IP>:8080/ws`
+
+Bağlantı başlıkları: `X-Serial`, `X-Device-Key` (yanlışsa 401).
+
+| Robot → sunucu | |
+|---|---|
+| `{"type":"hello", ...telemetri, firmwareVersion}` | bağlanınca bir kez |
+| `{"type":"telemetry", status, progress, battery, tank, water, position{x,y}, taskId ...}` | çalışırken 2 sn, beklerken 15 sn |
+| `{"type":"run", area, wasteKg, areaM2, durationMin, ammonia, hygiene, taskId}` | tur bitince (rapor) |
+| `{"type":"event", kind:"blocked\|error\|tank\|info", title, body}` | bildirim |
+| `{"type":"ack", command, ok, reason}` | komut uygulandı / reddedildi |
+
+| Sunucu → robot | |
+|---|---|
+| `{"type":"welcome"\|"sync", settings, tasks, localTime}` | hello/telemetri cevabı |
+| `{"type":"command", command, payload}` | `start, pause, stop, dock, empty, drive{dir}, ota{url}` |
+
+Not: Render ücretsiz planda servis trafik yoksa uyuyabilir; uyanması ~1 dk sürer, ESP32 kendiliğinden yeniden bağlanır.
+
+## Robot (cihaz) HTTP API'si (yedek yol)
+
+WebSocket kullanamayan cihazlar için. Aynı mantık (`lib/device.js`) kullanılır.
 Başlıklar: `X-Serial: <seri no>`, `X-Device-Key: <anahtar>` (uygulamada robot eklenince bir kez gösterilir).
 
 - `POST /device/telemetry` – 2-5 saniyede bir. Gövde: `status, progress, corridor, battery, tank, water, cleanedArea, ammonia, speed, etaMin, position{x,y}, taskId`. Cevap: `{ commands, settings, tasks }` → robot komutları uygular.
