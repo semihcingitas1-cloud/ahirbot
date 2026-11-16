@@ -7,6 +7,7 @@ const Task = require('../models/Task');
 const Notification = require('../models/Notification');
 const CleaningRun = require('../models/CleaningRun');
 const { requireUser, sha256 } = require('../middleware/auth');
+const { nowLocal, programSlots, isValidTime } = require('../lib/schedule');
 
 // Uygulamanın kullandığı API'ler (AhırBot src/redux/robotSlice.js ile birebir)
 const router = express.Router();
@@ -110,16 +111,30 @@ router.put('/robots/:id', async (req, res) => {
   if (!robot) return;
   const { name, barnId, cameraUrl } = req.body;
   if (name) robot.name = name;
-  if (barnId !== undefined) robot.barn = barnId || undefined;
+  if (barnId !== undefined) {
+    if (barnId && !(validId(barnId) && await Barn.exists({ _id: barnId, owner: req.user._id }))) return res.status(400).json({ message: 'Ahır bulunamadı.' });
+    robot.barn = barnId || undefined;
+  }
   if (cameraUrl !== undefined) robot.cameraUrl = cameraUrl;
   await robot.save();
   await robot.populate('barn');
   res.json(robot.toApp());
 });
 
+// Anahtar kaybolursa / robot el değiştirirse yeni cihaz anahtarı (eskisi geçersiz olur)
+router.post('/robots/:id/rotate-key', async (req, res) => {
+  const robot = await findRobot(req, res);
+  if (!robot) return;
+  const deviceKey = crypto.randomBytes(24).toString('hex');
+  robot.deviceKeyHash = sha256(deviceKey);
+  await robot.save();
+  res.json({ serialNumber: robot.serialNumber, deviceKey });
+});
+
 router.delete('/robots/:id', async (req, res) => {
   if (!validId(req.params.id)) return res.status(404).json({ message: 'Robot bulunamadı.' });
-  await Robot.deleteOne({ _id: req.params.id, owner: req.user._id });
+  const r = await Robot.findOneAndDelete({ _id: req.params.id, owner: req.user._id });
+  if (r) await Task.deleteMany({ robot: r._id, status: { $in: ['pending', 'running'] } });
   res.json({ success: true });
 });
 
@@ -131,17 +146,48 @@ const taskToApp = (t) => ({
   robotName: t.robot?.name, barn: t.barn?.name ?? '', mode: t.mode, status: t.status, progress: t.progress,
 });
 
+const programToApp = async (user) => {
+  const p = user.autoProgram || {};
+  const barn = p.barnId ? await Barn.findById(p.barnId) : null;
+  return {
+    enabled: !!p.enabled, everyHours: p.everyHours, barnId: barn ? String(barn._id) : null, barn: barn?.name ?? 'Tüm ahırlar',
+    from: p.from, to: p.to, waitDuringMilking: !!p.waitDuringMilking, quietNight: !!p.quietNight, milkingTimes: p.milkingTimes,
+    slots: programSlots(p),
+  };
+};
+
+// Programdan gelen bugünkü turlar (silinemez, uygulamada "Otomatik" etiketiyle görünür)
+const autoTasksToday = async (user) => {
+  const p = user.autoProgram;
+  const slots = programSlots(p);
+  if (!slots.length) return [];
+  const robotFilter = { owner: user._id };
+  if (p.barnId) robotFilter.barn = p.barnId;
+  const robots = await Robot.find(robotFilter).populate('barn', 'name').sort('name');
+  if (!robots.length) return [];
+  const { date, time } = nowLocal();
+  const robot = robots[0];
+  const lastDone = robots.map((r) => r.lastAutoSlot || '').sort().pop();
+  return slots.map((t) => ({
+    id: `auto-${t}`, auto: true, date, time: t, title: 'Otomatik tur', robotId: String(robot._id), robotName: robot.name,
+    barn: p.barnId ? robot.barn?.name ?? '' : 'Tüm ahırlar', mode: 'Program',
+    status: `${date} ${t}` <= lastDone ? 'done' : 'pending', progress: 0,
+  })).map((t) => (t.status === 'pending' && t.time <= time && robots.some((r) => r.liveStatus === 'cleaning') ? { ...t, status: 'running' } : t));
+};
+
 router.get('/tasks', async (req, res) => {
+  const { date: today } = nowLocal();
   const filter = { owner: req.user._id };
   if (req.query.date) filter.date = req.query.date;
-  else filter.date = { $gte: new Date(Date.now() - 86400000).toISOString().slice(0, 10) };
-  const tasks = await Task.find(filter).populate('robot', 'name').populate('barn', 'name').sort({ date: 1, time: 1 });
+  else filter.date = { $gte: today };
+  const tasks = (await Task.find(filter).populate('robot', 'name').populate('barn', 'name').sort({ date: 1, time: 1 })).map(taskToApp);
 
-  const p = req.user.autoProgram;
-  const programBarn = p?.barnId ? await Barn.findById(p.barnId) : null;
-  const program = p?.enabled ? { everyHours: p.everyHours, barn: programBarn?.name ?? 'Tüm ahırlar', from: p.from, to: p.to, waitDuringMilking: p.waitDuringMilking, quietNight: p.quietNight } : null;
+  if (!req.query.date || req.query.date === today) {
+    tasks.push(...await autoTasksToday(req.user));
+    tasks.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+  }
 
-  res.json({ tasks: tasks.map(taskToApp), program });
+  res.json({ tasks, program: await programToApp(req.user) });
 });
 
 router.post('/tasks', async (req, res) => {
@@ -171,9 +217,28 @@ router.delete('/tasks/:id', async (req, res) => {
 });
 
 router.put('/program', async (req, res) => {
-  Object.assign(req.user.autoProgram, req.body);
+  const b = req.body || {};
+  const p = req.user.autoProgram;
+  if (b.enabled !== undefined) p.enabled = !!b.enabled;
+  if (b.everyHours !== undefined) {
+    const n = Number(b.everyHours);
+    if (!(n >= 1 && n <= 12)) return res.status(400).json({ message: 'Tur aralığı 1-12 saat olmalı.' });
+    p.everyHours = n;
+  }
+  if (b.from !== undefined) { if (!isValidTime(b.from)) return res.status(400).json({ message: 'Başlangıç saati geçersiz.' }); p.from = b.from; }
+  if (b.to !== undefined) { if (!isValidTime(b.to, true)) return res.status(400).json({ message: 'Bitiş saati geçersiz.' }); p.to = b.to; }
+  if (b.barnId !== undefined) {
+    if (b.barnId && !(validId(b.barnId) && await Barn.exists({ _id: b.barnId, owner: req.user._id }))) return res.status(400).json({ message: 'Ahır bulunamadı.' });
+    p.barnId = b.barnId || undefined;
+  }
+  if (b.waitDuringMilking !== undefined) p.waitDuringMilking = !!b.waitDuringMilking;
+  if (b.quietNight !== undefined) p.quietNight = !!b.quietNight;
+  if (Array.isArray(b.milkingTimes)) {
+    if (!b.milkingTimes.every((t) => isValidTime(t))) return res.status(400).json({ message: 'Sağım saatleri geçersiz.' });
+    p.milkingTimes = b.milkingTimes.slice(0, 4);
+  }
   await req.user.save();
-  res.json({ success: true, program: req.user.autoProgram });
+  res.json({ success: true, program: await programToApp(req.user) });
 });
 
 // ───────── Bildirimler ─────────
