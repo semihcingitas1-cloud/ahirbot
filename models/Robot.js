@@ -28,6 +28,12 @@ const robotSchema = new mongoose.Schema({
   position: { x: { type: Number, default: 0 }, y: { type: Number, default: 0 } },
   lastSeenAt: { type: Date },
   firmwareVersion: { type: String },
+  runMinutes: { type: Number, default: 0 },     // toplam çalışma süresi (bakım hatırlatıcı için)
+  maintenance: {                                // son bakım anındaki runMinutes
+    brush: { lastAt: { type: Number, default: 0 }, doneAt: Date, notified: { type: Boolean, default: false } },
+    tracks: { lastAt: { type: Number, default: 0 }, doneAt: Date, notified: { type: Boolean, default: false } },
+    battery: { lastAt: { type: Number, default: 0 }, doneAt: Date, notified: { type: Boolean, default: false } },
+  },
   lastAutoSlot: { type: String },               // en son yapılan otomatik tur: "YYYY-MM-DD HH:MM"
 
   settings: {
@@ -68,6 +74,8 @@ robotSchema.methods.toApp = function () {
     position: { x: this.position?.x ?? 0, y: this.position?.y ?? 0 },
     lastSeenAt: this.lastSeenAt,
     firmwareVersion: this.firmwareVersion || null,
+    runHours: Math.round(((this.runMinutes || 0) / 60) * 10) / 10,
+    maintenance: require('../lib/maintenance').status(this),
     settings: this.settings,
   };
 };

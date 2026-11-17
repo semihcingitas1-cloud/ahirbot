@@ -6,6 +6,7 @@ const notificationSchema = new mongoose.Schema({
   type: { type: String, enum: ['blocked', 'error', 'tank', 'done', 'ammonia', 'info'], default: 'info' },
   title: { type: String, required: true },
   body: { type: String, default: '' },
+  code: { type: String },                       // alarm kodu (uygulamadaki alarm rehberi): E01, M01…
   read: { type: Boolean, default: false },
 }, { timestamps: true });
 

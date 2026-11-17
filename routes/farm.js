@@ -183,6 +183,17 @@ router.post('/robots/:id/rotate-key', ownerOnly, async (req, res) => {
   res.json({ serialNumber: robot.serialNumber, deviceKey });
 });
 
+// Bakım yapıldı: sayaç sıfırlanır
+router.post('/robots/:id/maintenance/:key', canEdit, async (req, res) => {
+  const robot = await findRobot(req, res);
+  if (!robot) return;
+  if (!['brush', 'tracks', 'battery'].includes(req.params.key)) return res.status(400).json({ message: 'Geçersiz bakım kalemi.' });
+  robot.maintenance[req.params.key] = { lastAt: robot.runMinutes || 0, doneAt: new Date(), notified: false };
+  await robot.save();
+  await robot.populate('barn');
+  res.json(robot.toApp());
+});
+
 router.delete('/robots/:id', ownerOnly, async (req, res) => {
   if (!validId(req.params.id)) return res.status(404).json({ message: 'Robot bulunamadı.' });
   const r = await Robot.findOneAndDelete({ _id: req.params.id, owner: req.farmId });
@@ -297,7 +308,7 @@ router.put('/program', canEdit, async (req, res) => {
 
 router.get('/notifications', async (req, res) => {
   const list = await Notification.find({ owner: req.farmId }).sort('-createdAt').limit(50);
-  res.json(list.map((n) => ({ id: String(n._id), type: n.type, title: n.title, body: n.body, read: n.read, ago: ago(n.createdAt), createdAt: n.createdAt })));
+  res.json(list.map((n) => ({ id: String(n._id), type: n.type, code: n.code || null, title: n.title, body: n.body, read: n.read, ago: ago(n.createdAt), createdAt: n.createdAt })));
 });
 
 router.post('/notifications/read-all', async (req, res) => {
@@ -319,6 +330,18 @@ router.post('/notifications/register-token', async (req, res) => {
 router.post('/notifications/unregister-token', async (req, res) => {
   await User.updateOne({ _id: req.user._id }, { $pull: { pushTokens: { token: String(req.body?.pushToken || '') } } });
   res.json({ success: true });
+});
+
+// ───────── Tur geçmişi (CSV/PDF dışa aktarma uygulamada yapılır) ─────────
+router.get('/history', async (req, res) => {
+  const days = Math.max(1, Math.min(366, Number(req.query.days) || 30));
+  const filter = { owner: req.farmId, finishedAt: { $gte: new Date(Date.now() - days * 86400000) } };
+  if (req.query.robotId && validId(req.query.robotId)) filter.robot = req.query.robotId;
+  const runs = await CleaningRun.find(filter).populate('robot', 'name').populate('barn', 'name').sort('-finishedAt').limit(1000);
+  res.json(runs.map((r) => ({
+    id: String(r._id), finishedAt: r.finishedAt, robotName: r.robot?.name ?? '', barnName: r.barn?.name ?? '',
+    area: r.area, durationMin: r.durationMin, wasteKg: r.wasteKg, areaM2: r.areaM2, ammonia: r.ammonia ?? null, hygiene: r.hygiene ?? null,
+  })));
 });
 
 // ───────── Raporlar ─────────
