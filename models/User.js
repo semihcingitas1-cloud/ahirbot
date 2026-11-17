@@ -7,7 +7,9 @@ const userSchema = new mongoose.Schema({
   email: { type: String, required: [true, 'E-posta zorunludur'], unique: true, lowercase: true, trim: true },
   phone: { type: String, trim: true },
   password: { type: String, required: [true, 'Şifre zorunludur'], select: false },
-  role: { type: String, enum: ['user', 'admin'], default: 'user' },
+  role: { type: String, enum: ['user', 'admin'], default: 'user' },   // admin: /admin paneline girebilir
+  disabled: { type: Boolean, default: false },                        // yönetici panelinden askıya alındı
+  lastLoginAt: { type: Date },
 
   isEmailVerified: { type: Boolean, default: false },
   emailVerificationToken: { type: String, select: false },

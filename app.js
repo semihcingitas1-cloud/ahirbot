@@ -7,6 +7,7 @@ const auth = require('./routes/auth');
 const farm = require('./routes/farm');
 const device = require('./routes/device');
 const team = require('./routes/team');
+const admin = require('./routes/admin');
 const homePage = require('./utils/homePage');
 const sendEmail = require('./utils/sendEmail');
 const { version } = require('./package.json');
@@ -42,6 +43,7 @@ app.get('/', async (req, res) => {
   res.send(homePage({ dbOk, version, mail }));
 });
 app.get('/health', (req, res) => res.json({ ok: true }));
+app.use('/', admin.pages);   // /admin yönetici paneli sayfaları
 
 // Her istekten önce (önbellekli) veritabanı bağlantısı
 app.use(async (req, res, next) => {
@@ -54,6 +56,7 @@ app.use(async (req, res, next) => {
   }
 });
 
+app.use('/admin/api', admin.api);
 app.use('/', auth);
 app.use('/', device);
 app.use('/', team);

@@ -130,10 +130,13 @@ router.post('/login', async (req, res) => {
     const user = await User.findOne({ email }).select('+password');
     if (!user || !(await bcrypt.compare(password, user.password))) return res.status(401).json({ message: 'E-posta veya şifre hatalı.' });
 
+    if (user.disabled) return res.status(403).json({ success: false, code: 'ACCOUNT_DISABLED', message: 'Hesabınız askıya alınmış. Destek ile iletişime geçin.' });
+
     if (!user.isEmailVerified) {
       return res.status(403).json({ success: false, code: 'EMAIL_NOT_VERIFIED', email: user.email, message: 'Giriş yapmadan önce e-posta adresinizi doğrulamalısınız.' });
     }
 
+    User.updateOne({ _id: user._id }, { $set: { lastLoginAt: new Date() } }).catch(() => {});
     res.json({ success: true, user: publicUser(user), token: signToken(user) });
   } catch (error) {
     console.error('LOGIN HATASI:', error.message);

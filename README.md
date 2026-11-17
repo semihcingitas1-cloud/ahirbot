@@ -56,3 +56,15 @@ Durum `blocked`/`error` olunca, hazne %85'i veya amonyak 20 ppm'i geçince bildi
 API=https://<adres> SERIAL=<seri no> KEY=<anahtar> node tools/robot-simulator.js
 ```
 Sahte robot telemetri gönderir, uygulamadan gelen başlat/duraklat/boşalt komutlarını uygular ve tur bitince rapora yazar.
+
+## Yönetici paneli (/admin)
+
+`https://<sunucu-adresiniz>/admin` adresinden açılır. Giriş, normal AhırBot hesabıyla yapılır ama sadece yöneticiler girebilir:
+
+1. Önce uygulamadan kendinize bir hesap açın (e-postanız doğrulanmış olsun).
+2. Vercel > Settings > Environment Variables'a `ADMIN_EMAILS=sizin@epostaniz.com` ekleyip yeniden deploy edin.
+3. `/admin` sayfasında aynı e-posta ve şifreyle girin. Başka birini panelden "Yönetici yap" ile ekleyebilirsiniz.
+
+Panelde: genel bakış (kullanıcı, çevrimiçi robot, son 7 gün tur, bakım bekleyen, alarmlar, yazılım sürümleri), kullanıcılar (ara, askıya al / aç, yönetici yap, e-postayı doğrulanmış say, robotları, ahırları, ekibi), robotlar (durdur, şarja gönder, OTA, anahtar yenile, sil), alarmlar (koda göre), turlar ve toplu yazılım güncellemesi.
+
+Güvenlik: panel token'ı 8 saat geçerlidir ve sekme kapanınca silinir; uygulama token'ı panele giremez. 15 dakikada 8 hatalı girişte e-posta geçici olarak kilitlenir. Askıya alınan kullanıcı uygulamaya giremez, açık oturumları da reddedilir (robotları çalışmaya devam eder). Yönetici işlemleri Vercel > Logs'a "ADMIN …" satırı olarak yazılır.
