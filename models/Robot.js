@@ -26,7 +26,6 @@ const robotSchema = new mongoose.Schema({
   routeLengthM: { type: Number, default: 0 },
   etaMin: { type: Number, default: 0 },
   position: { x: { type: Number, default: 0 }, y: { type: Number, default: 0 } },
-  cameraUrl: { type: String },                 // canlı yayın adresi (varsa)
   lastSeenAt: { type: Date },
   firmwareVersion: { type: String },
   lastAutoSlot: { type: String },               // en son yapılan otomatik tur: "YYYY-MM-DD HH:MM"
@@ -67,7 +66,6 @@ robotSchema.methods.toApp = function () {
     cleanedArea: this.cleanedArea, ammonia: this.ammonia, speed: this.speed,
     routeLengthM: this.routeLengthM, etaMin: this.etaMin,
     position: { x: this.position?.x ?? 0, y: this.position?.y ?? 0 },
-    cameraUrl: this.cameraUrl || null,
     lastSeenAt: this.lastSeenAt,
     firmwareVersion: this.firmwareVersion || null,
     settings: this.settings,

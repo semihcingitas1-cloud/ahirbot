@@ -1,5 +1,5 @@
 // Sunucu adresi tarayıcıda açılınca görünen durum sayfası
-const homePage = ({ dbOk, version }) => `<!doctype html>
+const homePage = ({ dbOk, version, mail }) => `<!doctype html>
 <html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AhırBot API</title>
 <style>
@@ -15,6 +15,7 @@ h1{margin:0;font-size:26px;letter-spacing:-.5px}h1 span{color:#22995f}
 .ok{background:#e6f5ec;color:#1b7a52}.bad{background:#fde8e7;color:#e5534b}
 .dot{width:8px;height:8px;border-radius:50%;background:currentColor}
 .ok .dot{animation:p 1.6s infinite}@keyframes p{0%{box-shadow:0 0 0 0 rgba(34,153,95,.5)}100%{box-shadow:0 0 0 8px rgba(34,153,95,0)}}
+.err{margin:-2px 4px 12px;text-align:left;font-size:12.5px;line-height:1.5;color:#b5403a;background:#fff6f5;border-radius:12px;padding:10px 12px}
 .foot{margin-top:18px;font-size:12px;color:#9aa8a0}
 </style></head>
 <body><div class="card">
@@ -23,6 +24,8 @@ h1{margin:0;font-size:26px;letter-spacing:-.5px}h1 span{color:#22995f}
 <p class="sub">Otonom ahır temizleme robotu sunucusu</p>
 <div class="row"><span>Sunucu</span><span class="pill ok"><span class="dot"></span>Çalışıyor</span></div>
 <div class="row"><span>Veritabanı</span>${dbOk ? '<span class="pill ok"><span class="dot"></span>Bağlı</span>' : '<span class="pill bad"><span class="dot"></span>Bağlantı yok</span>'}</div>
+<div class="row"><span>E-posta</span>${mail.ok ? '<span class="pill ok"><span class="dot"></span>Hazır</span>' : '<span class="pill bad"><span class="dot"></span>Hata</span>'}</div>
+${mail.ok ? '' : `<p class="err">${mail.reason}</p>`}
 <div class="row"><span>Sürüm</span><b>v${version}</b></div>
 <p class="foot">${new Date().toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' })}</p>
 </div></body></html>`;

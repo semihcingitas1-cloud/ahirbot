@@ -17,6 +17,19 @@ const userSchema = new mongoose.Schema({
 
   herdSize: { type: Number, default: 0 },
 
+  // Expo push token'ları (her telefon kurulumu için bir tane)
+  pushTokens: {
+    type: [{
+      token: { type: String, required: true },
+      platform: { type: String },
+      installationId: { type: String },
+      deviceName: { type: String },
+      updatedAt: { type: Date, default: Date.now },
+    }],
+    default: [],
+    select: false,
+  },
+
   // Ekran 5'teki "Otomatik program" kartı
   autoProgram: {
     enabled: { type: Boolean, default: true },

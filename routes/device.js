@@ -4,8 +4,8 @@ const { requireDevice } = require('../middleware/auth');
 const { applyTelemetry, drainCommands, recordRun, recordEvent } = require('../lib/device');
 
 // ─────────────────────────────────────────────────────────────
-// Robotun HTTP API'si (yedek yol). Asıl bağlantı WebSocket: ws-gateway.js.
-// WebSocket kullanamayan cihaz birkaç saniyede bir telemetri gönderir; cevapta komutlarını alır.
+// Robotun API'si. Vercel sürekli bağlantı tutamadığı için robot birkaç saniyede bir
+// telemetri gönderir; cevapta bekleyen komutlarını, ayarlarını ve görevlerini alır.
 // Başlıklar: X-Serial: <seri no>, X-Device-Key: <eşleştirmede verilen anahtar>
 // ─────────────────────────────────────────────────────────────
 

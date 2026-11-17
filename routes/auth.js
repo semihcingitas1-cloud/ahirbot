@@ -22,7 +22,7 @@ const RESET_EXPIRE_MS = 30 * 60 * 1000;
 const appUrl = (req) => process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
 const signToken = (user) => jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '30d' });
 
-const publicUser = (u) => ({ _id: u._id, name: u.name, email: u.email, phone: u.phone, role: u.role, plan: u.plan, herdSize: u.herdSize, isEmailVerified: u.isEmailVerified });
+const publicUser = (u) => ({ _id: u._id, name: u.name, email: u.email, phone: u.phone, role: u.role, herdSize: u.herdSize, isEmailVerified: u.isEmailVerified });
 
 const sendVerificationEmail = async (req, user) => {
   const token = crypto.randomBytes(32).toString('hex');

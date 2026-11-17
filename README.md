@@ -22,43 +22,26 @@ Yerelde: `cp .env.example .env`, değerleri doldurun, `npm install && npm run de
 |---|---|
 | `POST /register`, `POST /login`, `POST /resend-verification`, `POST /forgotPassword`, `GET /profile` | Hesap |
 | `GET /verify-email/:token`, `GET /reset/:token` | E-postadaki bağlantıların açtığı sayfalar |
-| `GET/POST /barns` | Ahırlar |
-| `GET /robots`, `POST /robots` (eşleştirme, cihaz anahtarı döner) | Robotlar |
-| `POST /robots/:id/command` `{ command: start\|pause\|stop\|dock\|empty\|drive }` | Komut kuyruğa girer |
+| `GET/POST /barns`, `PUT/DELETE /barns/:id` (`layout: {corridors, stalls, dock{x,y}, dump{x,y}}`) | Ahırlar ve ahır planı |
+| `GET /robots`, `POST /robots` (eşleştirme, cihaz anahtarı döner; aynı robot tekrar eklenirse yeni anahtar) | Robotlar |
+| `POST /robots/:id/command` `{ command: start\|pause\|stop\|dock\|empty\|drive\|ota }` | Komut kuyruğa girer (`ota`: `payload.url` .bin adresi) |
 | `PUT /robots/:id/settings` | Mod, hız, baskı, hayvan algılama |
 | `GET /tasks`, `POST /tasks`, `PUT /program` | Takvim |
 | `GET /reports?range=week\|month\|year` | Raporlar |
 | `GET /notifications`, `POST /notifications/read-all` | Bildirimler |
+| `POST /notifications/register-token`, `POST /notifications/unregister-token` | Telefonun Expo push token'ı |
+| `GET /team`, `POST /team/invites`, `PATCH/DELETE /team/members/:id`, `GET /team/invites/mine`, `POST /team/invites/:id/respond`, `POST /team/leave` | Çiftlik ekibi |
 
-## Robot WebSocket geçidi (ESP32 buraya bağlanır)
+### Roller
+- **Sahip**: her şey (robot ekleme/silme, anahtar, ahır silme, ekip).
+- **Yönetici**: ahır planı, görev, program, robot ayarları, OTA.
+- **Çalışan**: izleme, başlat/durdur/sür, bildirimler.
 
-Vercel WebSocket tutamaz; bu yüzden `ws-gateway.js` ayrı bir serviste sürekli çalışır (Render ücretsiz plan, `render.yaml` hazır).
-Uygulama yine Vercel API'yi kullanır. İkisi aynı MongoDB'ye bağlanır: uygulamanın komutu `pendingCommands`'a yazılır,
-geçit saniyede bir bakıp bağlı robota anında iletir.
+Ekip üyesi sahibin çiftliğini görür (`req.farmId`). Robot bildirimleri sahibe ve tüm aktif üyelere push olarak gider (Expo Push, ücretsiz; ek ayar gerekmez).
 
-Kurulum (Render): New → Blueprint → bu repo → `MONGO_URI` gir. Adres: `wss://<servis>.onrender.com/ws`
-Yerelde: `MONGO_URI=... npm run ws` → `ws://<bilgisayar IP>:8080/ws`
+## Robot (cihaz) API'si
 
-Bağlantı başlıkları: `X-Serial`, `X-Device-Key` (yanlışsa 401).
-
-| Robot → sunucu | |
-|---|---|
-| `{"type":"hello", ...telemetri, firmwareVersion}` | bağlanınca bir kez |
-| `{"type":"telemetry", status, progress, battery, tank, water, position{x,y}, taskId ...}` | çalışırken 2 sn, beklerken 15 sn |
-| `{"type":"run", area, wasteKg, areaM2, durationMin, ammonia, hygiene, taskId}` | tur bitince (rapor) |
-| `{"type":"event", kind:"blocked\|error\|tank\|info", title, body}` | bildirim |
-| `{"type":"ack", command, ok, reason}` | komut uygulandı / reddedildi |
-
-| Sunucu → robot | |
-|---|---|
-| `{"type":"welcome"\|"sync", settings, tasks, localTime}` | hello/telemetri cevabı |
-| `{"type":"command", command, payload}` | `start, pause, stop, dock, empty, drive{dir}, ota{url}` |
-
-Not: Render ücretsiz planda servis trafik yoksa uyuyabilir; uyanması ~1 dk sürer, ESP32 kendiliğinden yeniden bağlanır.
-
-## Robot (cihaz) HTTP API'si (yedek yol)
-
-WebSocket kullanamayan cihazlar için. Aynı mantık (`lib/device.js`) kullanılır.
+Vercel sürekli açık bağlantı (WebSocket/MQTT) tutamadığı için robot HTTP ile konuşur: çalışırken 2 sn, beklerken 5 sn'de bir telemetri gönderir, cevapta komutlarını alır. ESP32 test yazılımı: `ahirbot_esp32_http.ino`.
 Başlıklar: `X-Serial: <seri no>`, `X-Device-Key: <anahtar>` (uygulamada robot eklenince bir kez gösterilir).
 
 - `POST /device/telemetry` – 2-5 saniyede bir. Gövde: `status, progress, corridor, battery, tank, water, cleanedArea, ammonia, speed, etaMin, position{x,y}, taskId`. Cevap: `{ commands, settings, tasks }` → robot komutları uygular.
