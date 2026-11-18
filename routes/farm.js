@@ -137,6 +137,10 @@ router.post('/robots/:id/command', async (req, res) => {
   if (command === 'drive') robot.pendingCommands = robot.pendingCommands.filter((c) => c.command !== 'drive');
   // Acil durdurma her şeyin önüne geçer
   if (command === 'stop') robot.pendingCommands = [];
+  if (command === 'ota') {
+    robot.pendingCommands = robot.pendingCommands.filter((c) => c.command !== 'ota');
+    robot.ota = { state: 'queued', url: payload.url, version: payload.version, from: robot.firmwareVersion, at: new Date() };
+  }
   robot.pendingCommands.push({ command, payload });
   if (robot.pendingCommands.length > 20) robot.pendingCommands = robot.pendingCommands.slice(-20);
   await robot.save();

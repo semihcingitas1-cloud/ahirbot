@@ -15,6 +15,9 @@ const CleaningRun = require('../models/CleaningRun');
 const Task = require('../models/Task');
 const { requireAdmin, isAdmin, sha256 } = require('../middleware/auth');
 const maintenance = require('../lib/maintenance');
+const firmware = require('../lib/firmware');
+const ErrorLog = require('../models/ErrorLog');
+const { deleteUserData } = require('../lib/account');
 
 // ─────────────────────────────────────────────────────────────
 // Yönetici paneli: https://<sunucu>/admin
@@ -69,6 +72,7 @@ const adminRobot = (r) => {
     maintenanceDue: m.filter((x) => x.due).map((x) => x.label), pendingCommands: (r.pendingCommands || []).length,
     owner: r.owner && r.owner.email ? { id: String(r.owner._id), name: r.owner.name, email: r.owner.email } : null,
     barn: r.barn && r.barn.name ? (r.barn.fullName || r.barn.name) : '', createdAt: r.createdAt,
+    ota: r.ota && r.ota.state ? { state: r.ota.state, version: r.ota.version || null, from: r.ota.from || null, detail: r.ota.detail || null, at: r.ota.at || null } : null,
   };
 };
 
@@ -128,7 +132,10 @@ api.get('/stats', async (req, res) => {
     Robot.aggregate([{ $group: { _id: { $ifNull: ['$firmwareVersion', 'bilinmiyor'] }, n: { $sum: 1 } } }, { $sort: { _id: -1 } }]),
     Robot.find().select('runMinutes maintenance').lean(),
   ]);
-  const [runsDaily, signupsDaily] = await Promise.all([daily(CleaningRun, 'finishedAt', 14), daily(User, 'createdAt', 14)]);
+  const [runsDaily, signupsDaily, errOpen, err24] = await Promise.all([
+    daily(CleaningRun, 'finishedAt', 14), daily(User, 'createdAt', 14),
+    ErrorLog.countDocuments({ resolved: false }), ErrorLog.countDocuments({ lastAt: { $gte: daysAgo(1) } }),
+  ]);
   const due = robotDocs.filter((r) => maintenance.status(r).some((m) => m.due)).length;
   const r7 = runs7[0] || { n: 0, area: 0, waste: 0 };
   const byStatus = Object.fromEntries(statusRows.map((s) => [s._id, s.n]));
@@ -140,6 +147,7 @@ api.get('/stats', async (req, res) => {
     barns, members,
     runs7: { n: r7.n, areaM2: Math.round(r7.area), wasteKg: Math.round(r7.waste) },
     alarms24: alarms24.map((a) => ({ code: a._id, n: a.n })),
+    errors: { open: errOpen, last24: err24 },
     charts: { runs: runsDaily, signups: signupsDaily },
   });
 });
@@ -212,6 +220,16 @@ api.patch('/users/:id', async (req, res) => {
   res.json(adminUser(u));
 });
 
+// Hesabı ve tüm çiftlik verisini sil (kullanıcı e-postayla silme isterse)
+api.delete('/users/:id', async (req, res) => {
+  if (!validId(req.params.id)) return res.status(404).json({ message: 'Kullanıcı bulunamadı.' });
+  if (String(req.admin._id) === req.params.id) return res.status(400).json({ message: 'Kendi hesabınızı buradan silemezsiniz.' });
+  const info = await deleteUserData(req.params.id);
+  if (!info) return res.status(404).json({ message: 'Kullanıcı bulunamadı.' });
+  console.log(`ADMIN ${req.admin.email}: kullanıcı ${info.email} silindi`);
+  res.json({ success: true, deleted: info.summary });
+});
+
 // ─── Robotlar ───
 api.get('/robots', async (req, res) => {
   const filter = {};
@@ -234,15 +252,44 @@ api.get('/robots', async (req, res) => {
 const OTA_RE = /^https?:\/\/\S+$/i;
 const ADMIN_COMMANDS = ['stop', 'dock', 'ota'];
 
+// OTA hedefi: panelden yüklenen dosya ({ firmwareId }) ya da harici adres ({ url })
+const otaTarget = async (b = {}) => {
+  if (b.firmwareId) {
+    const fw = await firmware.get(b.firmwareId);
+    if (!fw) return { error: 'Yazılım dosyası bulunamadı.' };
+    return { payload: firmware.otaPayload(fw), ota: { version: fw.version, firmwareId: fw.id } };
+  }
+  const url = String(b.url || '').trim();
+  if (!OTA_RE.test(url)) return { error: 'Bir yazılım dosyası seçin ya da geçerli bir .bin adresi girin (http/https).' };
+  return { payload: { url }, ota: { url } };
+};
+
+// Kuyruktaki eski OTA komutu atılır, yenisi eklenir, durum "kuyrukta" olur (tek atomik güncelleme)
+const queueOta = (filter, t) => Robot.updateMany(filter, [{
+  $set: {
+    ota: { state: 'queued', version: t.ota.version || null, firmwareId: t.ota.firmwareId || null, url: t.ota.url || null, from: '$firmwareVersion', detail: null, at: '$$NOW' },
+    pendingCommands: { $concatArrays: [
+      { $filter: { input: { $ifNull: ['$pendingCommands', []] }, cond: { $ne: ['$$this.command', 'ota'] } } },
+      [{ command: 'ota', payload: { $literal: t.payload }, createdAt: '$$NOW' }],
+    ] },
+  },
+}], { updatePipeline: true });
+
 api.post('/robots/:id/command', async (req, res) => {
   if (!validId(req.params.id)) return res.status(404).json({ message: 'Robot bulunamadı.' });
   const { command, payload } = req.body;
   if (!ADMIN_COMMANDS.includes(command)) return res.status(400).json({ message: 'Panelden sadece durdur, şarja gönder ve güncelleme verilebilir.' });
-  if (command === 'ota' && !OTA_RE.test(String(payload?.url || ''))) return res.status(400).json({ message: 'Geçerli bir .bin adresi girin (http/https).' });
   const robot = await Robot.findById(req.params.id);
   if (!robot) return res.status(404).json({ message: 'Robot bulunamadı.' });
+  if (command === 'ota') {
+    const t = await otaTarget(payload);
+    if (t.error) return res.status(400).json({ message: t.error });
+    await queueOta({ _id: robot._id }, t);
+    console.log(`ADMIN ${req.admin.email}: ${robot.serialNumber} → ota ${t.ota.version || t.ota.url}`);
+    return res.json({ success: true });
+  }
   if (command === 'stop') robot.pendingCommands = [];
-  robot.pendingCommands.push({ command, payload: command === 'ota' ? { url: payload.url } : undefined });
+  robot.pendingCommands.push({ command });
   await robot.save();
   console.log(`ADMIN ${req.admin.email}: ${robot.serialNumber} → ${command}`);
   res.json({ success: true });
@@ -267,18 +314,125 @@ api.delete('/robots/:id', async (req, res) => {
   res.json({ success: true });
 });
 
-// Toplu yazılım güncellemesi: seçili robotlara ya da belirli sürümdeki tüm robotlara
+// ─── Yazılım dosyaları (OTA) ───
+// Yükleme: gövde ham .bin (Content-Type: application/octet-stream), sürüm/not başlıklarda.
+api.get('/firmware', async (req, res) => {
+  const [files, versions] = await Promise.all([
+    firmware.list(),
+    Robot.aggregate([{ $group: { _id: { $ifNull: ['$firmwareVersion', 'bilinmiyor'] }, n: { $sum: 1 } } }, { $sort: { _id: -1 } }]),
+  ]);
+  const onVersion = Object.fromEntries(versions.map((v) => [v._id, v.n]));
+  res.json({
+    maxBytes: firmware.MAX_BYTES,
+    files: files.map((f) => ({ ...f, robots: f.version ? onVersion[f.version] || 0 : 0 })),
+    versions: versions.map((v) => ({ version: v._id, n: v.n })),
+  });
+});
+
+api.post('/firmware', express.raw({ type: () => true, limit: firmware.MAX_BYTES + 1024 }), async (req, res) => {
+  const buf = req.body;
+  const check = firmware.inspect(buf);
+  if (!check.ok) return res.status(400).json({ message: check.reason });
+  let version = String(req.get('X-Firmware-Version') || '').trim() || check.version;
+  if (!version) return res.status(400).json({ message: 'Dosyada sürüm etiketi yok; sürümü elle yazın (ör. v0.5.0).' });
+  if (!firmware.VERSION_RE.test(version)) return res.status(400).json({ message: 'Sürüm sadece harf, rakam, nokta ve tire içerebilir (ör. v0.5.0).' });
+  if (check.version && check.version !== version) return res.status(400).json({ message: `Dosyanın içindeki sürüm ${check.version}, siz ${version} yazdınız. Robot güncellemeden sonra ${check.version} bildirir; sürümü düzeltin.` });
+  let notes = '';
+  let filename = '';
+  try { notes = decodeURIComponent(req.get('X-Notes') || '').slice(0, 500); filename = decodeURIComponent(req.get('X-Filename') || '').slice(0, 100); } catch { /* bozuk başlık */ }
+  const id = await firmware.save(buf, { version, notes, filename: filename.replace(/[^\w.-]/g, '_') || undefined, uploadedBy: req.admin.email });
+  console.log(`ADMIN ${req.admin.email}: yazılım yüklendi ${version} (${buf.length} bayt)`);
+  res.status(201).json({ ...(await firmware.get(id)), warning: check.isAhirbot ? null : 'Dosyada AhırBot etiketi bulunamadı. Başka bir projenin .bin dosyası olabilir; göndermeden önce kontrol edin.' });
+});
+
+api.delete('/firmware/:id', async (req, res) => {
+  if (!(await firmware.remove(req.params.id))) return res.status(404).json({ message: 'Dosya bulunamadı.' });
+  console.log(`ADMIN ${req.admin.email}: yazılım silindi ${req.params.id}`);
+  res.json({ success: true });
+});
+
+// Toplu güncelleme: { firmwareId | url, robotIds | fromVersion | all, onlyOnline, includeSame }
 api.post('/ota', async (req, res) => {
-  const { url, robotIds, fromVersion, onlyOnline } = req.body;
-  if (!OTA_RE.test(String(url || ''))) return res.status(400).json({ message: 'Geçerli bir .bin adresi girin (http/https).' });
+  const { robotIds, fromVersion, onlyOnline, includeSame } = req.body;
+  const t = await otaTarget(req.body);
+  if (t.error) return res.status(400).json({ message: t.error });
   const filter = {};
-  if (Array.isArray(robotIds) && robotIds.length) filter._id = { $in: robotIds.filter(validId) };
+  if (Array.isArray(robotIds) && robotIds.length) filter._id = { $in: robotIds.filter(validId).map((id) => new mongoose.Types.ObjectId(id)) };
   else if (fromVersion) filter.firmwareVersion = fromVersion === 'bilinmiyor' ? null : fromVersion;
   else if (!req.body.all) return res.status(400).json({ message: 'Robot seçin ya da bir sürüm seçin.' });
   if (onlyOnline) Object.assign(filter, onlineFilter());
-  const r = await Robot.updateMany(filter, { $push: { pendingCommands: { command: 'ota', payload: { url }, createdAt: new Date() } } });
-  console.log(`ADMIN ${req.admin.email}: toplu OTA ${url} → ${r.modifiedCount} robot`);
+  // Zaten bu sürümde olan robotlara gönderme (robot yine de "güncelleme yok" der)
+  if (t.ota.version && !includeSame) filter.$and = [...(filter.$and || []), { firmwareVersion: { $ne: t.ota.version } }];
+  const r = await queueOta(filter, t);
+  console.log(`ADMIN ${req.admin.email}: toplu OTA ${t.ota.version || t.ota.url} → ${r.modifiedCount} robot`);
   res.json({ success: true, count: r.modifiedCount });
+});
+
+// Son 14 günün güncelleme durumları
+api.get('/ota/status', async (req, res) => {
+  const list = await Robot.find({ 'ota.at': { $gte: daysAgo(14) } }).sort({ 'ota.at': -1 }).limit(200).populate('owner', 'name email');
+  res.json({ robots: list.map(adminRobot) });
+});
+
+// Bekleyen (henüz robota gitmemiş) güncellemeyi iptal et
+api.post('/robots/:id/ota-cancel', async (req, res) => {
+  if (!validId(req.params.id)) return res.status(404).json({ message: 'Robot bulunamadı.' });
+  const r = await Robot.updateOne({ _id: req.params.id, 'ota.state': 'queued' }, { $pull: { pendingCommands: { command: 'ota' } }, $unset: { ota: 1 } });
+  if (!r.modifiedCount) return res.status(400).json({ message: 'Robot komutu zaten aldı ya da bekleyen güncelleme yok.' });
+  res.json({ success: true });
+});
+
+// ─── Uygulama hataları ───
+const errorRow = (e) => ({
+  id: String(e._id), source: e.source, kind: e.kind, name: e.name, message: e.message, count: e.count, fatalCount: e.fatalCount,
+  users: (e.users || []).length, firstAt: e.firstAt, lastAt: e.lastAt, lastAppVersion: e.lastAppVersion || null, lastPlatform: e.lastPlatform || null,
+  resolved: !!e.resolved, resolvedAt: e.resolvedAt || null,
+});
+
+api.get('/errors', async (req, res) => {
+  const filter = {};
+  if (req.query.status !== 'all') filter.resolved = req.query.status === 'resolved';
+  if (['app', 'server'].includes(req.query.source)) filter.source = req.query.source;
+  if (req.query.q) filter.$or = [{ message: rx(req.query.q) }, { name: rx(req.query.q) }, { 'samples.email': rx(req.query.q) }, { lastAppVersion: rx(req.query.q) }];
+  if (req.query.days) filter.lastAt = { $gte: daysAgo(Math.max(1, Math.min(365, Number(req.query.days) || 7))) };
+  const p = pageOf(req);
+  const [total, list] = await Promise.all([
+    ErrorLog.countDocuments(filter),
+    ErrorLog.find(filter).sort(req.query.sort === 'count' ? '-count' : '-lastAt').skip(p * PAGE).limit(PAGE).select('-samples').lean(),
+  ]);
+  res.json({ total, page: p, pageSize: PAGE, errors: list.map(errorRow) });
+});
+
+api.get('/errors/:id', async (req, res) => {
+  if (!validId(req.params.id)) return res.status(404).json({ message: 'Kayıt bulunamadı.' });
+  const e = await ErrorLog.findById(req.params.id).lean();
+  if (!e) return res.status(404).json({ message: 'Kayıt bulunamadı.' });
+  const ids = [...new Set(e.samples.map((x) => x.user && String(x.user)).filter(Boolean))];
+  const users = Object.fromEntries((await User.find({ _id: { $in: ids } }).select('name email').lean()).map((u) => [String(u._id), u]));
+  res.json({
+    ...errorRow(e),
+    samples: e.samples.map((x) => ({ ...x, user: x.user && users[String(x.user)] ? { id: String(x.user), name: users[String(x.user)].name, email: users[String(x.user)].email } : null })),
+  });
+});
+
+api.patch('/errors/:id', async (req, res) => {
+  if (!validId(req.params.id)) return res.status(404).json({ message: 'Kayıt bulunamadı.' });
+  const resolved = !!req.body.resolved;
+  const e = await ErrorLog.findByIdAndUpdate(req.params.id, { $set: { resolved, resolvedAt: resolved ? new Date() : null } }, { new: true }).select('-samples').lean();
+  if (!e) return res.status(404).json({ message: 'Kayıt bulunamadı.' });
+  res.json(errorRow(e));
+});
+
+api.delete('/errors/:id', async (req, res) => {
+  if (!validId(req.params.id)) return res.status(404).json({ message: 'Kayıt bulunamadı.' });
+  await ErrorLog.deleteOne({ _id: req.params.id });
+  res.json({ success: true });
+});
+
+// Çözülmüş kayıtları topluca temizle
+api.post('/errors/purge-resolved', async (req, res) => {
+  const r = await ErrorLog.deleteMany({ resolved: true });
+  res.json({ success: true, count: r.deletedCount });
 });
 
 // ─── Alarmlar ve turlar ───

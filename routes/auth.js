@@ -7,6 +7,7 @@ const User = require('../models/User');
 const sendEmail = require('../utils/sendEmail');
 const { requireUser, sha256 } = require('../middleware/auth');
 const { page, esc } = require('../utils/page');
+const { deleteUserData } = require('../lib/account');
 
 // mqttserver/controls/user.js'teki kayıt, giriş, e-posta doğrulama ve şifre sıfırlama akışı.
 // Fark: doğrulama/sıfırlama bağlantıları ayrı bir web sitesine değil, bu sunucunun kendi sayfalarına gider.
@@ -144,28 +145,93 @@ router.post('/login', async (req, res) => {
   }
 });
 
+// Şifremi unuttum: e-postaya hem 6 haneli kod (uygulamada girilir) hem de tarayıcı bağlantısı gider.
+// Kod 30 dk geçerli, 5 hatalı denemede iptal olur. Aynı adrese dakikada en çok bir e-posta gider.
+const RESET_CODE_MAX_ATTEMPTS = 5;
+const codeHash = (user, code) => sha256(`${user._id}:${String(code).trim()}`);
+
 router.post('/forgotPassword', async (req, res) => {
-  const ok = { success: true, message: 'Hesap varsa şifre sıfırlama bağlantısı e-postanıza gönderildi.' };
+  const ok = { success: true, message: 'Bu e-postayla bir hesap varsa 6 haneli kod gönderdik. Gelen kutunuzu (ve spam klasörünü) kontrol edin.' };
   try {
     const email = String(req.body.email || '').trim().toLowerCase();
-    const user = await User.findOne({ email });
-    if (!user) return res.json(ok);
+    if (!EMAIL_RE.test(email)) return res.status(400).json({ message: 'Geçerli bir e-posta adresi girin.' });
+    const user = await User.findOne({ email }).select('+resetPasswordExpire');
+    if (!user || user.disabled) return res.json(ok);
+
+    const lastSentAt = user.resetPasswordExpire ? user.resetPasswordExpire.getTime() - RESET_EXPIRE_MS : 0;
+    if (Date.now() - lastSentAt < RESEND_COOLDOWN_MS) return res.json(ok);
 
     const token = crypto.randomBytes(32).toString('hex');
+    const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
     user.resetPasswordToken = sha256(token);
     user.resetPasswordExpire = new Date(Date.now() + RESET_EXPIRE_MS);
+    user.resetCodeHash = codeHash(user, code);
+    user.resetCodeAttempts = 0;
     await user.save({ validateBeforeSave: false });
 
     await sendEmail({
       to: user.email,
-      subject: 'AhırBot şifre sıfırlama',
-      html: `<p>Merhaba ${esc(user.name)},</p><p>Şifrenizi sıfırlamak için <a href="${appUrl(req)}/reset/${token}">buraya tıklayın</a>. Bağlantı 30 dakika geçerlidir.</p><p>Bu isteği siz yapmadıysanız e-postayı yok sayın.</p>`,
+      subject: `AhırBot şifre sıfırlama kodu: ${code}`,
+      html: `<p>Merhaba ${esc(user.name)},</p>
+        <p>Şifre sıfırlama kodunuz:</p>
+        <p style="font-size:28px;font-weight:800;letter-spacing:6px;margin:8px 0">${code}</p>
+        <p>Bu kodu AhırBot uygulamasındaki "Şifremi unuttum" ekranına girin. Kod 30 dakika geçerlidir.</p>
+        <p>Uygulama elinizde değilse <a href="${appUrl(req)}/reset/${token}">buradan tarayıcıda sıfırlayabilirsiniz</a>.</p>
+        <p>Bu isteği siz yapmadıysanız e-postayı yok sayın; şifreniz değişmez.</p>`,
     });
     res.json(ok);
   } catch (error) {
     console.error('FORGOT PASSWORD HATASI:', error.cause?.message || error.message);
     res.status(500).json({ message: 'E-posta gönderilemedi. Lütfen daha sonra tekrar deneyin.' });
   }
+});
+
+// Kodu kontrol eder. consume=false: sadece doğrular (uygulamada "yeni şifre" adımına geçmek için)
+const checkResetCode = async (emailRaw, code) => {
+  const email = String(emailRaw || '').trim().toLowerCase();
+  if (!/^\d{6}$/.test(String(code || '').trim())) return { status: 400, body: { code: 'INVALID_CODE', message: 'Kod 6 haneli olmalı.' } };
+  const user = await User.findOne({ email }).select('+resetCodeHash +resetCodeAttempts +resetPasswordExpire');
+  if (!user || !user.resetCodeHash || !user.resetPasswordExpire || user.resetPasswordExpire < new Date()) {
+    return { status: 400, body: { code: 'CODE_EXPIRED', message: 'Kodun süresi dolmuş ya da hiç istenmemiş. Yeni kod isteyin.' } };
+  }
+  if (user.resetCodeHash !== codeHash(user, code)) {
+    const attempts = (user.resetCodeAttempts || 0) + 1;
+    const left = RESET_CODE_MAX_ATTEMPTS - attempts;
+    if (left <= 0) {
+      await User.updateOne({ _id: user._id }, { $unset: { resetCodeHash: 1 }, $set: { resetCodeAttempts: attempts } });
+      return { status: 400, body: { code: 'TOO_MANY_ATTEMPTS', message: 'Çok fazla hatalı deneme. Yeni kod isteyin.' } };
+    }
+    await User.updateOne({ _id: user._id }, { $set: { resetCodeAttempts: attempts } });
+    return { status: 400, body: { code: 'INVALID_CODE', attemptsLeft: left, message: `Kod hatalı. ${left} deneme hakkınız kaldı.` } };
+  }
+  return { user };
+};
+
+router.post('/reset-password/check', async (req, res) => {
+  const r = await checkResetCode(req.body.email, req.body.code);
+  if (!r.user) return res.status(r.status).json(r.body);
+  res.json({ success: true });
+});
+
+// Uygulama içi sıfırlama: { email, code, password } → yeni şifre kaydedilir ve oturum açılır
+router.post('/reset-password/code', async (req, res) => {
+  const { password } = req.body;
+  if (!password || String(password).length < MIN_PASSWORD_LENGTH) return res.status(400).json({ message: `Şifre en az ${MIN_PASSWORD_LENGTH} karakter olmalı.` });
+  const r = await checkResetCode(req.body.email, req.body.code);
+  if (!r.user) return res.status(r.status).json(r.body);
+  const user = r.user;
+
+  user.password = await bcrypt.hash(String(password), 10);
+  user.resetPasswordToken = undefined;
+  user.resetPasswordExpire = undefined;
+  user.resetCodeHash = undefined;
+  user.resetCodeAttempts = 0;
+  user.isEmailVerified = true; // kod e-postaya gittiği için posta kutusu kanıtlanmış olur
+  await user.save();
+
+  if (user.disabled) return res.status(403).json({ success: false, code: 'ACCOUNT_DISABLED', message: 'Şifreniz değişti ancak hesabınız askıya alınmış. Destek ile iletişime geçin.' });
+  User.updateOne({ _id: user._id }, { $set: { lastLoginAt: new Date() } }).catch(() => {});
+  res.json({ success: true, user: publicUser(user), token: signToken(user) });
 });
 
 // Tarayıcıda açılan sıfırlama formu
@@ -193,6 +259,7 @@ router.post('/reset/:token', async (req, res) => {
     user.password = await bcrypt.hash(password, 10);
     user.resetPasswordToken = undefined;
     user.resetPasswordExpire = undefined;
+    user.resetCodeHash = undefined;
     user.isEmailVerified = true; // bağlantı e-postaya gittiği için posta kutusu kanıtlanmış olur
     await user.save();
 
@@ -215,6 +282,59 @@ router.put('/profile', requireUser, async (req, res) => {
   if (herdSize !== undefined) req.user.herdSize = Number(herdSize) || 0;
   await req.user.save();
   res.json({ success: true, user: publicUser(req.user) });
+});
+
+// ─── Hesap silme ───
+// Uygulamadan: DELETE /account  { password }   (Ayarlar > Hesabı sil)
+// Tarayıcıdan: /delete-account  (Google Play "hesap silme bağlantısı" olarak bu adres verilir)
+const sendDeletedEmail = (info) => sendEmail({
+  to: info.email,
+  subject: 'AhırBot hesabınız silindi',
+  html: `<p>Merhaba ${esc(info.name)},</p><p>AhırBot hesabınız ve çiftliğinize ait tüm veriler (robotlar, ahırlar, görevler, tur geçmişi, bildirimler, ekip) kalıcı olarak silindi.</p><p>Bu işlemi siz yapmadıysanız bu e-postayı yanıtlayın.</p>`,
+}).catch((e) => console.error('HESAP SİLME MAİLİ HATASI:', e.cause?.message || e.message));
+
+router.delete('/account', requireUser, async (req, res) => {
+  const password = String(req.body?.password || '');
+  if (!password) return res.status(400).json({ message: 'Hesabı silmek için şifrenizi girin.' });
+  const user = await User.findById(req.user._id).select('+password');
+  if (!user || !(await bcrypt.compare(password, user.password))) return res.status(401).json({ code: 'WRONG_PASSWORD', message: 'Şifre hatalı.' });
+
+  const info = await deleteUserData(user._id);
+  if (info) await sendDeletedEmail(info);
+  res.json({ success: true, message: 'Hesabınız ve tüm verileriniz silindi.', deleted: info?.summary });
+});
+
+const deleteForm = (msg = '') => page('Hesabı sil', `<h1>Hesabı sil</h1>
+  <p>AhırBot hesabınız ve çiftliğinize ait <b>tüm veriler</b> (robotlar, ahırlar, görevler, tur geçmişi, bildirimler, ekip) kalıcı olarak silinir. Bu işlem geri alınamaz.</p>
+  ${msg ? `<p class="err">${esc(msg)}</p>` : ''}
+  <form method="post" action="/delete-account">
+    <input type="email" name="email" placeholder="E-posta" autocomplete="username" required>
+    <input type="password" name="password" placeholder="Şifre" autocomplete="current-password" required>
+    <label style="display:flex;gap:8px;align-items:flex-start;text-align:left;color:#6b7c73;font-size:14px;margin:8px 0"><input type="checkbox" name="confirm" value="1" required style="width:auto;height:auto;margin-top:3px">Hesabımın ve tüm verilerimin kalıcı olarak silineceğini anlıyorum.</label>
+    <button type="submit" style="background:#e5534b">Hesabımı kalıcı olarak sil</button>
+  </form>`);
+
+router.get('/delete-account', (req, res) => res.send(deleteForm()));
+
+const deleteFails = new Map();
+router.post('/delete-account', async (req, res) => {
+  const email = String(req.body.email || '').trim().toLowerCase();
+  const password = String(req.body.password || '');
+  if (!email || !password || req.body.confirm !== '1') return res.status(400).send(deleteForm('E-posta, şifre ve onay kutusu gerekli.'));
+
+  const f = deleteFails.get(email);
+  if (f && f.n >= 5 && Date.now() - f.at < 15 * 60 * 1000) return res.status(429).send(deleteForm('Çok fazla hatalı deneme. 15 dakika sonra tekrar deneyin.'));
+
+  const user = await User.findOne({ email }).select('+password');
+  if (!user || !(await bcrypt.compare(password, user.password))) {
+    deleteFails.set(email, { n: (f ? f.n : 0) + 1, at: Date.now() });
+    await new Promise((r) => setTimeout(r, 700));
+    return res.status(401).send(deleteForm('E-posta veya şifre hatalı.'));
+  }
+  deleteFails.delete(email);
+  const info = await deleteUserData(user._id);
+  if (info) await sendDeletedEmail(info);
+  res.send(page('Hesap silindi', '<h1 class="ok">Hesabınız silindi</h1><p>Hesabınız ve çiftliğinize ait tüm veriler kalıcı olarak silindi. Robotlarınızı başka bir hesaba eklemek için robotu sıfırlayıp yeniden eşleştirin.</p>'));
 });
 
 module.exports = router;

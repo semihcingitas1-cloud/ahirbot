@@ -34,7 +34,18 @@ const robotSchema = new mongoose.Schema({
     tracks: { lastAt: { type: Number, default: 0 }, doneAt: Date, notified: { type: Boolean, default: false } },
     battery: { lastAt: { type: Number, default: 0 }, doneAt: Date, notified: { type: Boolean, default: false } },
   },
-  lastAutoSlot: { type: String },               // en son yapılan otomatik tur: "YYYY-MM-DD HH:MM"
+  lastAutoSlot: { type: String },
+  // Son yazılım güncellemesinin durumu (yönetici paneli ve uygulama gösterir)
+  //   queued: kuyrukta · sent: robot komutu aldı · downloading: indiriyor · success / failed / no_update
+  ota: {
+    state: { type: String, enum: ['queued', 'sent', 'downloading', 'success', 'failed', 'no_update'] },
+    version: String,        // hedef sürüm
+    from: String,           // güncelleme öncesi sürüm
+    firmwareId: String,     // GridFS dosyası (panelden yüklendiyse)
+    url: String,            // harici adres (elle girildiyse)
+    detail: String,         // hata açıklaması
+    at: Date,
+  },               // en son yapılan otomatik tur: "YYYY-MM-DD HH:MM"
 
   settings: {
     mode: { type: String, enum: ['scrape', 'vacuum', 'wash', 'disinfect'], default: 'scrape' },
@@ -77,6 +88,7 @@ robotSchema.methods.toApp = function () {
     runHours: Math.round(((this.runMinutes || 0) / 60) * 10) / 10,
     maintenance: require('../lib/maintenance').status(this),
     settings: this.settings,
+    ota: this.ota?.state ? { state: this.ota.state, version: this.ota.version || null, detail: this.ota.detail || null, at: this.ota.at } : null,
   };
 };
 

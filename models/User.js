@@ -16,6 +16,9 @@ const userSchema = new mongoose.Schema({
   emailVerificationExpire: { type: Date, select: false },
   resetPasswordToken: { type: String, select: false },
   resetPasswordExpire: { type: Date, select: false },
+  // Uygulama içi şifre sıfırlama: e-postaya giden 6 haneli kod (hash'i saklanır)
+  resetCodeHash: { type: String, select: false },
+  resetCodeAttempts: { type: Number, default: 0, select: false },
 
   herdSize: { type: Number, default: 0 },
 

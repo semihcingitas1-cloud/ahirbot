@@ -8,6 +8,8 @@ const farm = require('./routes/farm');
 const device = require('./routes/device');
 const team = require('./routes/team');
 const admin = require('./routes/admin');
+const errors = require('./routes/errors');
+const { recordServerError } = require('./lib/errorLog');
 const homePage = require('./utils/homePage');
 const sendEmail = require('./utils/sendEmail');
 const { version } = require('./package.json');
@@ -57,6 +59,7 @@ app.use(async (req, res, next) => {
 });
 
 app.use('/admin/api', admin.api);
+app.use('/', errors);
 app.use('/', auth);
 app.use('/', device);
 app.use('/', team);
@@ -65,8 +68,11 @@ app.use('/', farm);
 app.use((req, res) => res.status(404).json({ message: 'Bulunamadı' }));
 
 // Express 5 async hataları buraya düşer
-app.use((err, req, res, next) => {
+app.use(async (err, req, res, next) => {
+  if (err.type === 'entity.too.large') return res.status(413).json({ message: 'Dosya çok büyük.' });
+  if (err.type === 'entity.parse.failed') return res.status(400).json({ message: 'Geçersiz JSON.' });
   console.error('SUNUCU HATASI:', err.message);
+  await recordServerError(err, req);   // yönetici paneli > Hatalar
   res.status(500).json({ message: 'Sunucu hatası oluştu.' });
 });
 
