@@ -3,26 +3,23 @@
 // İsteğe bağlı 3. parametre: page(title, body, { status: 'ok' | 'err' | 'info' })
 // Verilmezse body'deki <h1 class="ok|err"> etiketinden otomatik anlaşılır.
 
-const esc = (s = '') =>
-  String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+const esc = (s = '') => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
 const ICONS = {
+
   ok: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.2 4.2L19 7" /></svg>',
   err: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7v6M12 16.5v.5" /></svg>',
   info: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10.5V8a5 5 0 0 1 10 0v2.5M6 10.5h12v9H6z" /></svg>',
 };
 
 const detectStatus = (body) => {
+
   const m = /<h1[^>]*class="[^"]*\b(ok|err)\b/.exec(body);
   return m ? m[1] : 'info';
 };
 
 const CSS = `
+
 :root{--bg:#f3f6f4;--card:#fff;--text:#14231c;--muted:#64746b;--line:#dde6e0;--brand:#1b7a52;--brand-2:#156443;--ok:#1b7a52;--ok-bg:#e6f4ec;--err:#d6453d;--err-bg:#fcebea;--info:#3d5a4c;--info-bg:#eaf0ec;--ring:rgba(27,122,82,.28);--shadow:0 1px 2px rgba(16,40,30,.06),0 12px 32px rgba(16,40,30,.08)}
 @media (prefers-color-scheme:dark){:root{--bg:#0d1512;--card:#152019;--text:#e6efe9;--muted:#93a49a;--line:#26352d;--brand:#2fa36f;--brand-2:#3bb57d;--ok:#4cc58c;--ok-bg:rgba(76,197,140,.12);--err:#f0726b;--err-bg:rgba(240,114,107,.12);--info:#a9bdb2;--info-bg:rgba(169,189,178,.1);--ring:rgba(47,163,111,.4);--shadow:0 1px 2px rgba(0,0,0,.3),0 12px 32px rgba(0,0,0,.35)}}
 *{box-sizing:border-box}
@@ -56,17 +53,30 @@ button:disabled{opacity:.6;cursor:default}
 `;
 
 const page = (title, body = '', opts = {}) => {
+
   const status = opts.status || detectStatus(body);
   const icon = ICONS[status] || ICONS.info;
   const year = new Date().getFullYear();
-  return `<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="light dark"><meta name="robots" content="noindex">
-<title>${esc(title)} · AhırBot</title><style>${CSS}</style></head>
-<body><div class="brand">Ahır<span>Bot</span></div>
-<main class="c"><div class="st ${status}">${icon}</div>${body}</main>
-<div class="foot">© ${year} AhırBot</div>
-<script>document.querySelectorAll('form').forEach(function(f){f.addEventListener('submit',function(){var b=f.querySelector('button[type=submit],button:not([type])');if(b){b.disabled=true;b.dataset.t=b.textContent;b.textContent='Lütfen bekleyin…';}});});</script>
-</body></html>`;
-};
+
+  return `<!doctype html>
+
+    <html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+
+      <meta name="color-scheme" content="light dark"><meta name="robots" content="noindex">
+
+      <title>${esc(title)} · AhırBot</title><style>${CSS}</style></head>
+
+      <body>
+
+        <div class="brand">Ahır<span>Bot</span></div>
+        <main class="c"><div class="st ${status}">${icon}</div>${body}</main>
+        <div class="foot">© ${year} AhırBot</div>
+
+        <script>document.querySelectorAll('form').forEach(function(f){f.addEventListener('submit',function(){var b=f.querySelector('button[type=submit],button:not([type])');if(b){b.disabled=true;b.dataset.t=b.textContent;b.textContent='Lütfen bekleyin…';}});});</script>
+
+      </body>
+
+    </html>`;
+  };
 
 module.exports = { page, esc };
