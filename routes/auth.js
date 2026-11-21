@@ -8,6 +8,7 @@ const sendEmail = require('../utils/sendEmail');
 const { requireUser, sha256 } = require('../middleware/auth');
 const { page, esc } = require('../utils/page');
 const { deleteUserData } = require('../lib/account');
+const { emailTemplate } = require('../utils/emailTemplate');
 
 // mqttserver/controls/user.js'teki kayıt, giriş, e-posta doğrulama ve şifre sıfırlama akışı.
 // Fark: doğrulama/sıfırlama bağlantıları ayrı bir web sitesine değil, bu sunucunun kendi sayfalarına gider.
@@ -35,10 +36,14 @@ const sendVerificationEmail = async (req, user) => {
   await sendEmail({
     to: user.email,
     subject: 'AhırBot e-posta adresinizi doğrulayın',
-    html: `<p>Merhaba ${esc(user.name)},</p>
-      <p>AhırBot hesabınızı etkinleştirmek için aşağıdaki bağlantıya tıklayın. Bağlantı 24 saat geçerlidir.</p>
-      <p><a href="${url}">E-posta adresimi doğrula</a></p>
-      <p>Bu kaydı siz yapmadıysanız bu e-postayı yok sayabilirsiniz.</p>`,
+    ...emailTemplate({
+      preheader: 'Hesabınızı etkinleştirmek için e-posta adresinizi doğrulayın.',
+      title: 'E-posta adresinizi doğrulayın',
+      greeting: `Merhaba ${user.name},`,
+      paragraphs: ['AhırBot hesabınızı etkinleştirmek için aşağıdaki butona dokunun. Bağlantı <b>24 saat</b> geçerlidir.'],
+      button: { url, label: 'E-posta adresimi doğrula' },
+      note: 'Bu kaydı siz yapmadıysanız bu e-postayı yok sayabilirsiniz; hesap etkinleşmez.',
+    }),
   });
 };
 
@@ -169,15 +174,19 @@ router.post('/forgotPassword', async (req, res) => {
     user.resetCodeAttempts = 0;
     await user.save({ validateBeforeSave: false });
 
+    const resetUrl = `${appUrl(req)}/reset/${token}`;
     await sendEmail({
       to: user.email,
       subject: `AhırBot şifre sıfırlama kodu: ${code}`,
-      html: `<p>Merhaba ${esc(user.name)},</p>
-        <p>Şifre sıfırlama kodunuz:</p>
-        <p style="font-size:28px;font-weight:800;letter-spacing:6px;margin:8px 0">${code}</p>
-        <p>Bu kodu AhırBot uygulamasındaki "Şifremi unuttum" ekranına girin. Kod 30 dakika geçerlidir.</p>
-        <p>Uygulama elinizde değilse <a href="${appUrl(req)}/reset/${token}">buradan tarayıcıda sıfırlayabilirsiniz</a>.</p>
-        <p>Bu isteği siz yapmadıysanız e-postayı yok sayın; şifreniz değişmez.</p>`,
+      ...emailTemplate({
+        preheader: `Şifre sıfırlama kodunuz: ${code}. 30 dakika geçerlidir.`,
+        title: 'Şifre sıfırlama kodunuz',
+        greeting: `Merhaba ${user.name},`,
+        paragraphs: ['Bu kodu AhırBot uygulamasındaki <b>"Şifremi unuttum"</b> ekranına girin. Kod <b>30 dakika</b> geçerlidir.'],
+        code,
+        after: [`Uygulama elinizde değilse <a href="${resetUrl}" style="color:#1b7a52;font-weight:600">buradan tarayıcıda sıfırlayabilirsiniz</a>.`],
+        note: 'Bu isteği siz yapmadıysanız e-postayı yok sayın; şifreniz değişmez.',
+      }),
     });
     res.json(ok);
   } catch (error) {
@@ -290,7 +299,14 @@ router.put('/profile', requireUser, async (req, res) => {
 const sendDeletedEmail = (info) => sendEmail({
   to: info.email,
   subject: 'AhırBot hesabınız silindi',
-  html: `<p>Merhaba ${esc(info.name)},</p><p>AhırBot hesabınız ve çiftliğinize ait tüm veriler (robotlar, ahırlar, görevler, tur geçmişi, bildirimler, ekip) kalıcı olarak silindi.</p><p>Bu işlemi siz yapmadıysanız bu e-postayı yanıtlayın.</p>`,
+  ...emailTemplate({
+    preheader: 'Hesabınız ve tüm verileriniz kalıcı olarak silindi.',
+    title: 'Hesabınız silindi',
+    greeting: `Merhaba ${info.name},`,
+    paragraphs: ['AhırBot hesabınız ve çiftliğinize ait tüm veriler (robotlar, ahırlar, görevler, tur geçmişi, bildirimler, ekip) kalıcı olarak silindi.'],
+    note: 'Bu işlemi siz yapmadıysanız hemen bu e-postayı yanıtlayın.',
+    tone: 'danger',
+  }),
 }).catch((e) => console.error('HESAP SİLME MAİLİ HATASI:', e.cause?.message || e.message));
 
 router.delete('/account', requireUser, async (req, res) => {
